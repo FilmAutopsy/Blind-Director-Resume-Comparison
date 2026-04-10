@@ -6,6 +6,7 @@ import random
 
 import pandas as pd
 import streamlit as st
+from supabase import create_client
 
 DEFAULT_DATA_DIR = "phase2_optionA_outputs"
 DEFAULT_VOTES_CSV = "blind_votes.csv"
@@ -39,6 +40,14 @@ def normalize_name(name: str) -> str:
     return str(name).strip().lower()
 
 
+@st.cache_resource
+def get_supabase():
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"],
+    )
+
+
 @st.cache_data(show_spinner=False)
 def load_data(data_dir: str, all_directors: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     data_path = Path(data_dir)
@@ -59,34 +68,51 @@ def load_data(data_dir: str, all_directors: bool = True) -> tuple[pd.DataFrame, 
 
 @st.cache_data(show_spinner=False)
 def load_votes(votes_csv: str) -> pd.DataFrame:
-    path = Path(votes_csv)
-    if path.exists():
-        return pd.read_csv(path)
-    return pd.DataFrame(columns=[
+    columns = [
         "session", "resume_a_director", "resume_b_director", "choice",
         "notes", "timestamp_utc"
-    ])
+    ]
+    try:
+        supabase = get_supabase()
+        response = (
+            supabase.table("blind_votes")
+            .select("session_id,director_a,director_b,choice,notes,created_at")
+            .order("created_at")
+            .execute()
+        )
+        data = response.data or []
+        if not data:
+            return pd.DataFrame(columns=columns)
+        df = pd.DataFrame(data).rename(columns={
+            "session_id": "session",
+            "director_a": "resume_a_director",
+            "director_b": "resume_b_director",
+            "created_at": "timestamp_utc",
+        })
+        for col in columns:
+            if col not in df.columns:
+                df[col] = ""
+        return df[columns]
+    except Exception as e:
+        st.error(f"Could not load votes from Supabase: {e}")
+        return pd.DataFrame(columns=columns)
 
 
 def save_vote(votes_csv: str, a_name: str, b_name: str, choice: str, notes: str = "", session: str = "default") -> None:
     choice = choice.strip().upper()
     if choice not in {"A", "B", "T"}:
         raise ValueError("choice must be A, B, or T")
-    new_row = pd.DataFrame([{
-        "session": session,
-        "resume_a_director": a_name,
-        "resume_b_director": b_name,
+
+    payload = {
+        "session_id": session,
+        "director_a": a_name,
+        "director_b": b_name,
         "choice": choice,
         "notes": notes,
-        "timestamp_utc": pd.Timestamp.utcnow().isoformat(),
-    }])
-    path = Path(votes_csv)
-    if path.exists():
-        old = pd.read_csv(path)
-        out = pd.concat([old, new_row], ignore_index=True)
-    else:
-        out = new_row
-    out.to_csv(path, index=False)
+    }
+
+    supabase = get_supabase()
+    supabase.table("blind_votes").insert(payload).execute()
     load_votes.clear()
 
 
@@ -282,7 +308,7 @@ def main() -> None:
     with st.sidebar:
         st.header("Settings")
         data_dir = st.text_input("Data folder", value=DEFAULT_DATA_DIR)
-        votes_csv = st.text_input("Votes CSV", value=DEFAULT_VOTES_CSV)
+        votes_csv = st.text_input("Votes CSV (unused with Supabase)", value=DEFAULT_VOTES_CSV)
         all_directors = st.checkbox("Use all-directors cards", value=True)
         eligible_only = st.checkbox("Eligible directors only", value=True)
         min_pa = st.number_input("Minimum films (PA)", min_value=1, max_value=200, value=1, step=1)
@@ -413,7 +439,7 @@ def main() -> None:
         stat3.metric("Avg model confidence for your pick", "—")
 
     st.caption(
-        "Local Streamlit runs can save votes to CSV. For a public site, CSV persistence may be temporary; use a database, Google Sheets, or Supabase for durable storage."
+        "This build reads and writes votes through Supabase for durable shared storage."
     )
 
 
