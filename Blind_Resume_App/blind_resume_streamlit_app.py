@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client
 
-DEFAULT_DATA_DIR = "phase2_optionA_outputs"
+DEFAULT_DATA_DIR = "."
 DEFAULT_VOTES_CSV = "blind_votes.csv"
 
 BLIND_FIELDS = [
